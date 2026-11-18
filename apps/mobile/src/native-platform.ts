@@ -140,7 +140,17 @@ interface NotificationsPlugin {
 const DuskNotifications = registerPlugin<NotificationsPlugin>("DuskNotifications");
 
 interface StreamPlugin {
-  open(options: { id: string; url: string; method?: string; headers?: Record<string, string>; body?: string }): Promise<{ status: number; headers: Record<string, string> }>;
+  open(options: {
+    id: string;
+    url: string;
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    connectTimeout?: number;
+    readTimeout?: number;
+    stream?: boolean;
+    followRedirects?: boolean;
+  }): Promise<{ status: number; headers: Record<string, string>; body?: string }>;
   close(options: { id: string }): Promise<void>;
   addListener(event: "chunk", listener: (event: { id: string; data: string }) => void): Promise<PluginListenerHandle>;
   addListener(event: "end", listener: (event: { id: string; error?: string }) => void): Promise<PluginListenerHandle>;
@@ -156,14 +166,14 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function fromBase64(b64: string): Uint8Array {
+function fromBase64(b64: string): Uint8Array<ArrayBuffer> {
   const binary = atob(b64);
-  const out = new Uint8Array(binary.length);
+  const out = new Uint8Array(new ArrayBuffer(binary.length));
   for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
   return out;
 }
 
-export function createNativeStreamFetch(plugin: StreamPlugin): typeof fetch {
+export function createNativeStreamFetch(plugin: StreamPlugin, webFetch?: typeof fetch): typeof fetch {
   let nextId = 0;
   let listening: Promise<void> | null = null;
   const active = new Map<string, { chunk(data: string): void; end(error?: string): void }>();
@@ -176,6 +186,23 @@ export function createNativeStreamFetch(plugin: StreamPlugin): typeof fetch {
   };
   return async (input, init) => {
     const request = new Request(input, init);
+    let targetUrl = request.url;
+    try {
+      const parsed = new URL(targetUrl);
+      if (parsed.pathname === "/_capacitor_http_interceptor_") {
+        const proxied = parsed.searchParams.get("u");
+        if (proxied) targetUrl = proxied;
+      } else if (
+        webFetch &&
+        (parsed.protocol === "blob:" ||
+          parsed.protocol === "data:" ||
+          parsed.protocol === "capacitor:" ||
+          parsed.protocol === "file:" ||
+          (typeof window !== "undefined" && parsed.origin === window.location.origin))
+      ) {
+        return webFetch(input, init);
+      }
+    } catch {}
     request.signal.throwIfAborted();
     await ensureListeners();
     request.signal.throwIfAborted();
@@ -214,30 +241,55 @@ export function createNativeStreamFetch(plugin: StreamPlugin): typeof fetch {
         cleanup(true);
       },
     });
+    let rejectOpen: ((reason: unknown) => void) | null = null;
     const onAbort = () => {
+      const reason = request.signal.reason ?? new DOMException("Aborted", "AbortError");
       cleanup(true);
-      try { streamController?.error(request.signal.reason ?? new DOMException("Aborted", "AbortError")); } catch {}
+      rejectOpen?.(reason);
+      try { streamController?.error(reason); } catch {}
     };
     request.signal.addEventListener("abort", onAbort, { once: true });
+    const isSse = (headers.accept ?? headers.Accept ?? "").toLowerCase().includes("text/event-stream") ||
+      targetUrl.includes("/api/events") || targetUrl.endsWith("/stream");
     try {
-      const { status, headers: resHeaders } = await plugin.open({
+      const openPromise = plugin.open({
         id,
-        url: request.url,
+        url: targetUrl,
         method: request.method,
         headers,
+        connectTimeout: isSse ? 10_000 : 6_000,
+        stream: isSse,
+        followRedirects: request.redirect !== "error" && request.redirect !== "manual",
         ...(rawBody && rawBody.length ? { body: toBase64(rawBody) } : {}),
       });
+      const abortPromise = new Promise<never>((_, reject) => {
+        rejectOpen = reject;
+        if (request.signal.aborted) {
+          reject(request.signal.reason ?? new DOMException("Aborted", "AbortError"));
+        }
+      });
+      const { status, headers: resHeaders, body: inlineBody } = await Promise.race([openPromise, abortPromise]);
       if (request.signal.aborted) {
         cleanup(true);
         throw request.signal.reason ?? new DOMException("Aborted", "AbortError");
       }
-      const nullBody = status === 204 || status === 205 || status === 304;
+      if (request.redirect === "error" && status >= 300 && status < 400) {
+        cleanup(true);
+        throw new TypeError(`Unexpected redirect (HTTP ${status})`);
+      }
+      const nullBody = status === 204 || status === 205 || status === 304 || request.method === "HEAD";
+      if (typeof inlineBody === "string") {
+        request.signal.removeEventListener("abort", onAbort);
+        cleanup(false);
+        return new Response(nullBody ? null : fromBase64(inlineBody), { status, headers: resHeaders });
+      }
       if (nullBody) cleanup(true);
       return new Response(nullBody ? null : stream, { status, headers: resHeaders });
     } catch (error) {
       request.signal.removeEventListener("abort", onAbort);
       cleanup(true);
-      throw error instanceof Error ? new TypeError(error.message) : new TypeError("Network request failed");
+      const msg = error instanceof Error ? error.message : typeof error === "string" ? error : "Network request failed";
+      throw new TypeError(msg);
     }
   };
 }
@@ -533,7 +585,11 @@ export async function nativePlatform(): Promise<MobilePlatform> {
   if (kind === "android") {
     overlayReady ??= StatusBar.setOverlaysWebView({ overlay: true }).catch(() => {});
     if (Capacitor.isPluginAvailable("DuskStream")) {
-      (window as Window & { CapacitorWebFetch?: typeof fetch }).CapacitorWebFetch = createNativeStreamFetch(DuskStream);
+      const win = window as Window & { CapacitorWebFetch?: typeof fetch };
+      const origWebFetch = (win.CapacitorWebFetch ?? window.fetch).bind(window);
+      const streamFetch = createNativeStreamFetch(DuskStream, origWebFetch);
+      win.CapacitorWebFetch = streamFetch;
+      window.fetch = streamFetch;
     }
   } else {
     // WKWebView draws a form bar (previous, next, Done) over the keyboard; a chat has one field and its own send
@@ -554,11 +610,23 @@ export async function nativePlatform(): Promise<MobilePlatform> {
   let pendingLaunchUrl = launch?.url;
   const secrets: MobilePlatform["secrets"] = {
     get: async (key) => {
-      const { data } = await keystore.internalGetItem({ prefixedKey: SECRET_PREFIX + key, sync: false });
-      return typeof data === "string" ? data : null;
+      try {
+        const { data } = await keystore.internalGetItem({ prefixedKey: SECRET_PREFIX + key, sync: false });
+        if (typeof data === "string") return data;
+      } catch {}
+      return (await Preferences.get({ key: `${SECRET_PREFIX}sec.${key}` })).value;
     },
-    set: (key, value) => keystore.internalSetItem({ prefixedKey: SECRET_PREFIX + key, data: value, sync: false }),
-    remove: async (key) => { await keystore.internalRemoveItem({ prefixedKey: SECRET_PREFIX + key, sync: false }); },
+    set: async (key, value) => {
+      try {
+        await keystore.internalSetItem({ prefixedKey: SECRET_PREFIX + key, data: value, sync: false });
+      } catch {
+        await Preferences.set({ key: `${SECRET_PREFIX}sec.${key}`, value });
+      }
+    },
+    remove: async (key) => {
+      await keystore.internalRemoveItem({ prefixedKey: SECRET_PREFIX + key, sync: false }).catch(() => {});
+      await Preferences.remove({ key: `${SECRET_PREFIX}sec.${key}` }).catch(() => {});
+    },
   };
   const speech = Capacitor.isPluginAvailable("DuskSpeech");
   const turnActivityOn = Capacitor.isPluginAvailable("DuskTurnActivity");

@@ -19,7 +19,7 @@ import { MascotTrio } from "./SkyScene";
 import { BackButton, ErrorLine, FIELD, HEADLINE, LINE, PRIMARY, QUIET, Screen, StepPane, TONAL } from "./parts";
 
 export type Step = "welcome" | "signin" | "clouds" | "confirm" | "permission" | "denied" | "scan" | "code" | "paste";
-type Failure = { code: PairError["code"] | "account-offline"; name: string; companion: boolean };
+type Failure = { code: PairError["code"] | "account-offline"; name: string; companion: boolean; details?: string };
 type PhoneCodeOutcome = Awaited<ReturnType<NonNullable<ReturnType<typeof useMobileAccount>>["signIn"]["phoneCode"]>>["outcome"];
 
 /** a dusk cloud code that did not log in, as the failure the code screen says */
@@ -62,6 +62,11 @@ function Failed({ failure, onSignIn }: { failure: Failure; onSignIn?: () => void
     ) : null}>
       <span className="block font-semibold">{t(`mobile.onboarding.err.${key}.title` as Parameters<typeof t>[0])}</span>
       <span className="block text-ink-secondary">{t(`mobile.onboarding.err.${key}.body` as Parameters<typeof t>[0], { name: failure.name })}</span>
+      {failure.details && (
+        <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-all rounded-[10px] bg-ink/[0.06] px-2.5 py-2 font-mono text-[11px] leading-4 text-ink-secondary">
+          {`ERR_${failure.code.toUpperCase()}\n${failure.details}`}
+        </pre>
+      )}
     </ErrorLine>
   );
 }
@@ -139,7 +144,8 @@ export function Onboarding({ initial = null, reason = null, startAtLink = false,
       await onLinked(result.record, result.token, result.record.label || installationName(payload));
     } catch (error) {
       haptic("error");
-      setFailure({ code: error instanceof PairError ? error.code : "unreachable", name: installationName(payload), companion: payload?.transport === "companion" });
+      const details = error instanceof PairError ? error.details : error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      setFailure({ code: error instanceof PairError ? error.code : "unreachable", name: installationName(payload), companion: payload?.transport === "companion", ...(details ? { details } : {}) });
       if (from === "scan") { setStep("code"); setScanFailed(true); }
     } finally {
       locked.current = false;

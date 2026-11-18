@@ -80,6 +80,9 @@ jobs:
         run: npx cap sync android
       - name: Build Android APK and AAB
         working-directory: apps/mobile/android
+        env:
+          DUSK_ANDROID_VERSION_CODE: ${{ 1000 + github.run_number }}
+          DUSK_ANDROID_VERSION_NAME: "1.0.${{ github.run_number }}"
         run: |
           sdk="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           extra=()

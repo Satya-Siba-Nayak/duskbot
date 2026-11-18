@@ -299,7 +299,8 @@ export function pairingFromPayload(payload: MobileLinkPayload): MobilePairingPay
 function legacyOrigin(value: string | null): string | undefined {
   if (!value) return undefined;
   try {
-    const url = new URL(/^[a-z]+:\/\//i.test(value) ? value : `http://${value}`);
+    const defaultScheme = /(?:^|\.)dusk\.bot(?::\d+)?$/i.test(value) || /:443$/.test(value) ? "https://" : "http://";
+    const url = new URL(/^[a-z]+:\/\//i.test(value) ? value : `${defaultScheme}${value}`);
     if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) return undefined;
     return url.origin;
   } catch {
