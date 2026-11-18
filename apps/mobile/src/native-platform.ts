@@ -257,7 +257,7 @@ export function createNativeStreamFetch(plugin: StreamPlugin, webFetch?: typeof 
         url: targetUrl,
         method: request.method,
         headers,
-        connectTimeout: isSse ? 10_000 : 6_000,
+        connectTimeout: isSse ? 10_000 : 5_000,
         stream: isSse,
         followRedirects: request.redirect !== "error" && request.redirect !== "manual",
         ...(rawBody && rawBody.length ? { body: toBase64(rawBody) } : {}),

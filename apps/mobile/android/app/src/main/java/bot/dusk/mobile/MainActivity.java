@@ -1,6 +1,7 @@
 package bot.dusk.mobile;
 
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.os.Build;
@@ -11,11 +12,15 @@ import android.view.WindowManager;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import androidx.annotation.NonNull;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.core.view.WindowCompat;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
 
+    private static final String PERMISSION_ACCESS_LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK";
+    private static final int REQUEST_LOCAL_NETWORK = 9001;
     private boolean landscapeAllowed = false;
 
     @Override
@@ -31,6 +36,18 @@ public class MainActivity extends BridgeActivity {
         configureWindow();
         configureWebView();
         TurnActivityPlugin.handleIntent(getIntent());
+        requestLocalNetworkPermissionIfSupported();
+    }
+
+    private void requestLocalNetworkPermissionIfSupported() {
+        try {
+            getPackageManager().getPermissionInfo(PERMISSION_ACCESS_LOCAL_NETWORK, 0);
+        } catch (PackageManager.NameNotFoundException ignored) {
+            return;
+        }
+        if (ContextCompat.checkSelfPermission(this, PERMISSION_ACCESS_LOCAL_NETWORK) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, new String[] { PERMISSION_ACCESS_LOCAL_NETWORK }, REQUEST_LOCAL_NETWORK);
+        }
     }
 
     @Override
