@@ -168,7 +168,7 @@ public class TurnActivityPlugin extends Plugin {
     public void end(PluginCall call) {
         String id = call.getString("id");
         JSObject state = call.getObject("state");
-        boolean now = Boolean.TRUE.equals(call.getBool("now", false));
+        boolean now = Boolean.TRUE.equals(call.getBoolean("now", false));
         TurnRecord record = id != null ? active.remove(id) : null;
         if (record == null) {
             if (id != null && now) cancelNotification(id);
