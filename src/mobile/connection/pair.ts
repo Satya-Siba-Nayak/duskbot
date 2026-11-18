@@ -1,5 +1,6 @@
 import { observePairing } from "@/lib/product-analytics";
-import { appLinkFromUniversal, parseSignInLink, DEFAULT_MOBILE_RELAY, MOBILE_LOOKUP_SALT, pairingFromPayload, parseMobilePayload, parseMobilePairingLink, type MobileRedeemRequest, type MobileRedeemResponse, type MobileCapabilities, type MobileConnectionRecord, type MobilePairingPayload, type SignInService } from "../../../shared/mobile-link";
+import { appLinkFromUniversal, parseSignInLink, DEFAULT_MOBILE_RELAY, MOBILE_LOOKUP_SALT, pairingFromPayload, parseMobilePayload, parseMobilePairingLink, type MobileRedeemRequest, type MobileRedeemResponse, type MobileCapabilities, type MobileConnectionRecord, type MobilePairingPayload, type MobileTransport, type SignInService } from "../../../shared/mobile-link";
+import { qrEndpoints, type CompanionEndpoint } from "../../../shared/pairing-link";
 import { randomUuid } from "@/lib/random-uuid";
 import { cleanPhoneSignInCode } from "../../../shared/account-api";
 import type { MobilePlatform } from "../platform";
@@ -9,6 +10,13 @@ import { open as openRelay } from "../transport/relay";
 export type TypedPairing = MobilePairingPayload;
 export type TypedCode = { kind: "code"; code: string };
 type PairErrorCode = "expired" | "unknown" | "store-qr" | "used" | "sign-in" | "limited" | "unreachable" | "mismatch" | "refused" | "relay-unavailable" | "invalid" | "unsupported";
+
+export function routeTimeoutMs(route: MobileTransport): number {
+  if (route.kind !== "companion") return 15_000;
+  if (route.net === "hosted" || route.net === "tailnet") return 12_000;
+  if (route.net === "bonjour") return 3_500;
+  return 5_000;
+}
 
 // the desktop's clock stamps a grant's end; a phone a little ahead of it still tries, and the desktop decides
 const CLOCK_SKEW_MS = 2 * 60_000;
@@ -88,6 +96,7 @@ type PairAnswer = {
   scopes?: string[];
   id?: string;
   capabilities?: Partial<MobileCapabilities>;
+  endpoints?: CompanionEndpoint[];
   code?: string;
   error?: string;
 };
@@ -118,14 +127,29 @@ async function redeemLegacyPairing(payload: MobilePairingPayload, platform: Mobi
   if (lapsed(payload.expiresAt)) throw new PairError("expired");
   try {
     const pairRequestId = await attemptId(payload, platform, origin.origin);
-    const response = await fetch(`${origin.origin}/api/pair`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, credentials: "omit", mode: "cors", redirect: "error",
-      body: JSON.stringify({ ...(payload.credential ? { credential: payload.credential } : {}), ...(payload.code ? { code: payload.code } : {}), deviceName: platform.deviceName(), pairRequestId }),
-    });
-    const paired = await answerOf(response);
-    if (response.status !== 200 && response.status !== 201) throw responseError(response.status, paired);
-    if (typeof paired.token !== "string" || !paired.token) throw new PairError("invalid");
-    const sessionResponse = await fetch(`${origin.origin}/api/auth/session`, {
+    const candidateOrigins = [...new Set([origin.origin, ...(payload.endpoints?.map((item) => item.url) ?? [])])];
+    let paired: PairAnswer | undefined;
+    let activeOrigin = origin;
+    let lastError = new PairError("unreachable");
+    for (const candidateUrl of candidateOrigins) {
+      let parsedCandidate: URL;
+      try { parsedCandidate = new URL(candidateUrl); } catch { continue; }
+      let response: Response;
+      try {
+        response = await fetch(`${parsedCandidate.origin}/api/pair`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, credentials: "omit", mode: "cors", redirect: "error",
+          body: JSON.stringify({ ...(payload.credential ? { credential: payload.credential } : {}), ...(payload.code ? { code: payload.code } : {}), deviceName: platform.deviceName(), pairRequestId }),
+        });
+      } catch (error) { lastError = pairError(error); continue; }
+      const answer = await answerOf(response);
+      if (response.status !== 200 && response.status !== 201) throw responseError(response.status, answer);
+      if (typeof answer.token !== "string" || !answer.token) throw new PairError("invalid");
+      paired = answer;
+      activeOrigin = parsedCandidate;
+      break;
+    }
+    if (!paired || typeof paired.token !== "string") throw lastError;
+    const sessionResponse = await fetch(`${activeOrigin.origin}/api/auth/session`, {
       headers: { Authorization: `Bearer ${paired.token}` }, credentials: "omit", mode: "cors", redirect: "error",
     });
     const session = await answerOf(sessionResponse);
@@ -138,10 +162,17 @@ async function redeemLegacyPairing(payload: MobilePairingPayload, platform: Mobi
     const capability = (key: keyof MobileCapabilities) => typeof advertised[key] === "boolean" ? advertised[key] : direct;
     const id = randomUuid();
     const now = Date.now();
+    const validEndpoints = payload.transport === "companion"
+      ? qrEndpoints([...(Array.isArray(paired.endpoints) ? paired.endpoints : []), ...(payload.endpoints ?? [])])
+      : [];
+    const via: MobileTransport[] | undefined = validEndpoints.length
+      ? validEndpoints.map((endpoint) => ({ kind: "companion", url: endpoint.url, net: endpoint.kind, priority: endpoint.priority }))
+      : undefined;
     const record: MobileConnectionRecord = {
-      id, environmentId: typeof identity.environmentId === "string" ? identity.environmentId : origin.origin,
-      label: payload.name || (typeof paired.serverName === "string" && paired.serverName) || origin.host,
-      transport: payload.transport, origin: origin.origin, sessionRef: `token.${id}`,
+      id, environmentId: typeof identity.environmentId === "string" ? identity.environmentId : activeOrigin.origin,
+      label: payload.name || (typeof paired.serverName === "string" && paired.serverName) || activeOrigin.host,
+      transport: payload.transport, origin: activeOrigin.origin, sessionRef: `token.${id}`,
+      ...(via ? { via } : {}),
       ...(typeof identity.id === "string" ? { sessionId: identity.id } : typeof paired.device?.id === "string" ? { sessionId: paired.device.id } : {}),
       capabilities: {
         chat: true, uploads: true, computerView: true,
@@ -166,7 +197,14 @@ async function resolveTypedCodeResult(code: string, relayBase = DEFAULT_MOBILE_R
   try {
     const id = hex(await hkdf(utf8(normalized), MOBILE_LOOKUP_SALT, "lookup", 16));
     const key = await hkdf(utf8(normalized), MOBILE_LOOKUP_SALT, "seal", 32);
-    const response = await fetch(`${relayBase.replace(/\/$/, "")}/v1/lookups/${id}`, { credentials: "omit", redirect: "error", signal: AbortSignal.timeout(15_000) });
+    const lookupUrl = `${relayBase.replace(/\/$/, "")}/v1/lookups/${id}`;
+    let response: Response;
+    try {
+      response = await fetch(lookupUrl, { credentials: "omit", redirect: "error", signal: AbortSignal.timeout(15_000) });
+    } catch (firstError) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      response = await fetch(lookupUrl, { credentials: "omit", redirect: "error", signal: AbortSignal.timeout(15_000) }).catch(() => { throw firstError; });
+    }
     // the relay forgets a lookup when its code ends, and never had one for a code made elsewhere (a browser's /pair code)
     if (response.status === 404) throw new PairError("unknown");
     if (!response.ok) throw responseError(response.status, await answerOf(response));
@@ -230,7 +268,7 @@ async function redeemPairingResult(payload: MobilePairingPayload, platform: Mobi
           channel = openRelay(route.base, route.channel, route.token, unbase64(route.key));
           response = await channel.request("POST", "/api/mobile/redeem", headers, utf8(body), AbortSignal.timeout(20_000));
         } else {
-          response = await fetch(`${route.url}/api/mobile/redeem`, { method: "POST", headers, body, credentials: "omit", redirect: "error", signal: AbortSignal.timeout(route.kind === "companion" ? 3_500 : 15_000) });
+          response = await fetch(`${route.url}/api/mobile/redeem`, { method: "POST", headers, body, credentials: "omit", redirect: "error", signal: AbortSignal.timeout(routeTimeoutMs(route)) });
         }
         answer = await response.json().catch(() => null);
       } catch (error) { lastError = pairError(error); continue; }

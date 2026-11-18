@@ -8,7 +8,7 @@ import { frameGuard, open as openRelay, RelayGoneError } from "../transport/rela
 import type { PhoneTransport } from "../transport/transport";
 import { forgetTranscriptShelf } from "@/state/transcript-cache";
 import { outboxKey } from "./active";
-import { PairError } from "./pair";
+import { PairError, routeTimeoutMs } from "./pair";
 import { asleepAnswer, wakingAnswer } from "@/lib/cloud-power";
 
 /** `asleep`: the place's edge said its dusk cloud sleeps (or is waking). It is still the place: the app opens on it and
@@ -16,9 +16,15 @@ import { asleepAnswer, wakingAnswer } from "@/lib/cloud-power";
 export type WorkspaceTransport = PhoneTransport & { asleep?: true };
 
 export async function connectToWorkspace(record: MobileConnectionRecord, token: string, platform: MobilePlatform, signal: AbortSignal): Promise<WorkspaceTransport> {
-  const routes: MobileTransport[] = record.via ?? (record.origin ? [record.transport === "companion"
+  const baseRoutes: MobileTransport[] = record.via ?? (record.origin ? [record.transport === "companion"
     ? { kind: "companion", url: record.origin, net: "lan", priority: 0 }
     : { kind: "https", url: record.origin }] : []);
+  const routes: MobileTransport[] = record.origin
+    ? [
+        ...baseRoutes.filter((route) => route.kind !== "relay" && route.url === record.origin),
+        ...baseRoutes.filter((route) => route.kind === "relay" || route.url !== record.origin),
+      ]
+    : baseRoutes;
   let gone = false;
   let sleeping: WorkspaceTransport | null = null;
   for (const route of routes) {
@@ -26,7 +32,7 @@ export async function connectToWorkspace(record: MobileConnectionRecord, token: 
     let transport: PhoneTransport | undefined;
     let response: Response;
     try {
-      const timed = AbortSignal.any([signal, AbortSignal.timeout(route.kind === "companion" ? 3_500 : 15_000)]);
+      const timed = AbortSignal.any([signal, AbortSignal.timeout(routeTimeoutMs(route))]);
       const headers = { Authorization: `Bearer ${token}` };
       if (route.kind === "relay") {
         const relay = record.relay;
@@ -51,7 +57,8 @@ export async function connectToWorkspace(record: MobileConnectionRecord, token: 
       if (error instanceof RelayGoneError) gone = true;
       continue;
     }
-    if (signal.aborted || !response.ok) {
+    const companionRefused = route.kind === "companion" && [403, 404].includes(response.status);
+    if (signal.aborted || (!response.ok && !companionRefused)) {
       if (transport.kind === "relay") transport.channel.close();
       signal.throwIfAborted();
       if (response.status === 401) throw new PairError("refused");

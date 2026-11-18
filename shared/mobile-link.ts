@@ -322,6 +322,32 @@ export function parseMobilePairingLink(link: string): MobilePairingPayload | nul
   if (code !== undefined && !/^[A-Za-z0-9]{6,12}$/.test(code)) return null;
   const origin = legacyOrigin(q.get("address"));
   if (!origin) return null;
+  let endpoints: CompanionEndpoint[] | undefined;
+  const rawEndpoints = q.get("endpoints");
+  if (rawEndpoints && rawEndpoints.length <= 4096 && B64URL.test(rawEndpoints)) {
+    try {
+      const parsed: unknown = JSON.parse(fromBase64Url(rawEndpoints));
+      if (Array.isArray(parsed)) {
+        const valid = qrEndpoints(parsed as CompanionEndpoint[]);
+        if (valid.length) endpoints = valid;
+      }
+    } catch {}
+  }
+  if (!endpoints && code) {
+    const rawHosts = q.get("hosts");
+    const port = new URL(origin).port || "8810";
+    if (rawHosts) {
+      const candidates: CompanionEndpoint[] = rawHosts.split(",").map((host, index) => {
+        const trimmed = host.trim();
+        const hostOrigin = legacyOrigin(trimmed.includes(":") && !trimmed.startsWith("[") ? trimmed : `${trimmed}:${port}`);
+        const lower = trimmed.toLowerCase();
+        const kind: CompanionEndpointKind = lower.endsWith(".ts.net") ? "tailnet" : lower.endsWith(".local") ? "bonjour" : "lan";
+        return hostOrigin ? { url: hostOrigin, kind, priority: index } : null;
+      }).filter((item): item is CompanionEndpoint => item !== null);
+      const valid = qrEndpoints(candidates);
+      if (valid.length) endpoints = valid;
+    }
+  }
   return {
     v: 1,
     transport: code ? "companion" : "https",
@@ -329,6 +355,7 @@ export function parseMobilePairingLink(link: string): MobilePairingPayload | nul
     credential,
     ...(code ? { code } : {}),
     ...(q.get("name")?.trim() ? { name: q.get("name")!.trim() } : {}),
+    ...(endpoints ? { endpoints } : {}),
   };
 }
 

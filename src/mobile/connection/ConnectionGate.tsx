@@ -150,7 +150,16 @@ export function ConnectionGate({ children, forcePair }: { children: ReactNode; f
    * time the moment hands over. No reload. */
   const linked = useCallback(async (record: MobileConnectionRecord, token: string, name: string) => {
     await store.save(record, token);
-    const transport = await connectToWorkspace(record, token, platform, new AbortController().signal);
+    let transport: Awaited<ReturnType<typeof connectToWorkspace>>;
+    try {
+      transport = await connectToWorkspace(record, token, platform, new AbortController().signal);
+    } catch (error) {
+      if (record.origin && (record.transport === "companion" || record.transport === "https") && !(error instanceof PairError && error.code === "refused")) {
+        transport = { kind: "bearer", origin: record.origin, token };
+      } else {
+        throw error;
+      }
+    }
     uninstall.current?.();
     uninstall.current = installTransport(transport, retry);
     if (transport.asleep) markCloudAsleep();
