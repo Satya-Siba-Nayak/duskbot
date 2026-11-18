@@ -1,0 +1,89 @@
+name: Package Android
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/mobile/**"
+      - "src/mobile/**"
+      - "shared/**"
+      - ".github/workflows/package-android.yml"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit/tag/branch to build (defaults to the branch this is run from)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Android APK + AAB (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Configure Java 21 and Android SDK
+        shell: bash
+        run: |
+          if ! java -version 2>&1 | grep -q 'version "21'; then
+            sudo apt-get update && sudo apt-get install -y openjdk-21-jdk-headless
+            export JAVA_HOME="/usr/lib/jvm/java-21-openjdk-amd64"
+            echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+            echo "$JAVA_HOME/bin" >> "$GITHUB_PATH"
+          fi
+          sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$sdk" >> "$GITHUB_ENV"
+          sdkmgr=$(find "$sdk/cmdline-tools" -name sdkmanager 2>/dev/null | head -n 1 || true)
+          if [ -n "$sdkmgr" ]; then
+            yes | "$sdkmgr" --licenses >/dev/null 2>&1 || true
+            "$sdkmgr" "platform-tools" "build-tools;36.0.0" >/dev/null 2>&1 || true
+            if ! "$sdkmgr" "platforms;android-37" >/dev/null 2>&1; then
+              "$sdkmgr" "platforms;android-36" >/dev/null 2>&1 || true
+            fi
+          fi
+      - run: pnpm install --frozen-lockfile
+      - name: Verify Android parity tests
+        run: node --test apps/mobile/android/android17-parity.node-test.mjs
+      - name: Build web bundle and release gate
+        run: |
+          pnpm --filter @duskbot/mobile build
+          node apps/mobile/scripts/release-gate.mjs
+      - name: Sync Capacitor Android project
+        working-directory: apps/mobile
+        run: npx cap sync android
+      - name: Build Android APK and AAB
+        working-directory: apps/mobile/android
+        run: |
+          sdk="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          extra=()
+          if [ ! -d "$sdk/platforms/android-37" ] && [ -d "$sdk/platforms/android-36" ]; then
+            echo "Android 37 SDK platform not yet on runner mirror; compiling against installed android-36 platform headers"
+            extra=(-PcompileSdkOverride=36)
+          fi
+          ./gradlew --no-daemon "${extra[@]}" assembleDebug assembleRelease bundleRelease
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: duskbot-android
+          path: |
+            apps/mobile/android/app/build/outputs/apk/debug/*.apk
+            apps/mobile/android/app/build/outputs/apk/release/*.apk
+            apps/mobile/android/app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
+          retention-days: 30

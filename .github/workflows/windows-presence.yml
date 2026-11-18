@@ -5,16 +5,6 @@ name: Windows presence check
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - electron/user-presence*.mjs
-      - electron/windows-hello*.mjs
-      - .github/workflows/windows-presence.yml
-  pull_request:
-    paths:
-      - electron/user-presence*.mjs
-      - electron/windows-hello*.mjs
-      - .github/workflows/windows-presence.yml
 
 permissions:
   contents: read

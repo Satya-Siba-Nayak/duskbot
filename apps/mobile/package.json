@@ -9,8 +9,8 @@
     "preview:phone": "node scripts/phone-preview.mjs",
     "build": "vite build --config vite.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "sync": "vite build --config vite.config.ts && cap sync",
-    "ios": "vite build --config vite.config.ts && cap sync ios && cap run ios",
+    "sync": "vite build --config vite.config.ts && cap sync android",
+    "ios": "echo 'error: iOS builds are blocked (Android-only mode)' >&2 && exit 1",
     "android": "vite build --config vite.config.ts && cap sync android && cap run android"
   },
   "dependencies": {

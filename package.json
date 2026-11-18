@@ -32,7 +32,7 @@
     "test:phone-layout": "node --experimental-strip-types apps/mobile/store/layout-check.ts",
     "mobile:build":"pnpm --filter @duskbot/mobile build",
     "mobile:gate": "node apps/mobile/scripts/release-gate.mjs",
-    "mobile:release": "pnpm --filter @duskbot/mobile build && node apps/mobile/scripts/release-gate.mjs && pnpm --filter @duskbot/mobile exec cap sync",
+    "mobile:release": "pnpm --filter @duskbot/mobile build && node apps/mobile/scripts/release-gate.mjs && pnpm --filter @duskbot/mobile exec cap sync android",
     "companion": "node --experimental-strip-types apps/companion/src/index.ts",
     "dusk": "node --experimental-strip-types server/duskbot.ts",
     "pair": "node --experimental-strip-types server/duskbot.ts pair",

@@ -452,8 +452,8 @@ export async function nativePlatform(): Promise<MobilePlatform> {
     remove: async (key) => { await keystore.internalRemoveItem({ prefixedKey: SECRET_PREFIX + key, sync: false }); },
   };
   const speech = Capacitor.isPluginAvailable("DuskSpeech");
-  const turnActivityOn = kind === "ios" && Capacitor.isPluginAvailable("DuskTurnActivity");
-  const notificationsOn = kind === "ios" && Capacitor.isPluginAvailable("DuskNotifications");
+  const turnActivityOn = Capacitor.isPluginAvailable("DuskTurnActivity");
+  const notificationsOn = Capacitor.isPluginAvailable("DuskNotifications");
   registerPhoneVoice({
     os: kind,
     speech: speech ? phoneSpeech(DuskSpeech) : undefined,
@@ -613,7 +613,7 @@ export async function nativePlatform(): Promise<MobilePlatform> {
         const data = notification.data ?? {};
         if (actionId !== "tap" || fromBotHost(data)) listener({ actionId, ...(inputValue ? { inputValue } : {}), data });
       })];
-      if (kind === "ios" && Capacitor.isPluginAvailable("DuskTurnActivity")) handles.push(DuskTurnActivity.addListener("action", listener));
+      if (Capacitor.isPluginAvailable("DuskTurnActivity")) handles.push(DuskTurnActivity.addListener("action", listener));
       return unsubscribe(handles);
     },
     turnActivity: turnActivityOn ? turnActivityBridge() : undefined,

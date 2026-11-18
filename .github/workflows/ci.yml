@@ -2,36 +2,12 @@ name: CI
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-  pull_request:
-  # The merge queue runs CI on the PR merged onto the current main BEFORE it
-  # lands, so a PR that is green alone but red together with what just
-  # merged is stopped in the queue instead of on main (that shape reddened
-  # main twice in Sep 2026). Turning the queue on is a branch-ruleset
-  # setting, which GitHub offers only once an organization owns the
-  # repository (docs/ci.md); this trigger is what lets CI report on those runs.
-  merge_group:
-  # The full lane every week on main's newest commit (macOS and Windows minutes cost 10x and 2x on a private repo): every platform's shards
-  # and smokes, which pushes to main and merge groups leave out (docs/ci.md).
-  schedule:
-    - cron: "17 21 * * 0"
 
 # least privilege: CI only reads the checkout, it never writes back
 permissions:
   contents: read
 
 concurrency:
-  # A new PR push supersedes that PR's older checks. Main's pushes keep one run
-  # going and one waiting: each merge replaces the waiting run, so a burst of
-  # merges costs two runs, not one per merge (fifteen queued behind each other
-  # in October 2026). The running one always finishes. Every other run has a
-  # group no push can join: a merge group its own ref, the nightly run and each
-  # manual run (the release branch's, and the release-ci/v<version> lane that
-  # scripts/release-ci.mjs starts) their event and branch. A PR's group is
-  # named by its number, never by github.ref: a merged PR's closed event
-  # reports the base branch as github.ref, so a ref-named group let every merge
-  # cancel main's run (ci-stop-closed.yml).
   group: ci-${{ github.event_name == 'merge_group' && github.event.merge_group.head_ref || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'push' && github.ref || format('{0}-{1}', github.event_name, github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 

@@ -17,6 +17,10 @@
 #   APPLE_API_KEY_ID, APPLE_API_ISSUER, APPLE_API_KEY_PATH   the App Store Connect API key, for --upload
 # The build number is DUSK_IOS_BUILD_NUMBER, default a UTC timestamp (every upload needs a higher one).
 set -euo pipefail
+if [ "${DUSK_ALLOW_IOS_BUILD:-0}" != "1" ]; then
+  echo "error: iOS builds are blocked while Android-only build mode is active (set DUSK_ALLOW_IOS_BUILD=1 to override)" >&2
+  exit 1
+fi
 here=$(cd "$(dirname "$0")" && pwd)
 mobile=$(cd "$here/.." && pwd)
 repo=$(cd "$mobile/../.." && pwd)

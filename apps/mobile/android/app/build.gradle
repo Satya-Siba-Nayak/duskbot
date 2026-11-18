@@ -75,3 +75,12 @@ try {
 } catch(Exception e) {
     logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
 }
+
+tasks.register('releaseGate', Exec) {
+    commandLine 'node', file('../../scripts/release-gate.mjs'), file('src/main/assets/public')
+}
+
+tasks.matching { it.name == 'mergeReleaseAssets' || it.name == 'lintVitalRelease' }.configureEach {
+    dependsOn 'releaseGate'
+}
+

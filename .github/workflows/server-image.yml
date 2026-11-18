@@ -7,8 +7,6 @@ name: Server image
 # itself (publish ticked) needs this run by hand; a draft published from the releases page starts it.
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:

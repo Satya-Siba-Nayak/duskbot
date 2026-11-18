@@ -15,8 +15,15 @@ repo=$(cd "$mobile/../.." && pwd)
 dusk_env_load ANDROID_UPLOAD_KEYSTORE_PATH ANDROID_UPLOAD_KEY_ALIAS ANDROID_UPLOAD_STORE_PASSWORD ANDROID_UPLOAD_KEY_PASSWORD
 
 if [ -z "${ANDROID_HOME:-}" ] && [ -z "${ANDROID_SDK_ROOT:-}" ] && [ ! -f "$mobile/android/local.properties" ]; then
-  if [ -d "$HOME/Library/Android/sdk" ]; then export ANDROID_HOME="$HOME/Library/Android/sdk"
+  if [ -d "$HOME/Android/Sdk" ]; then export ANDROID_HOME="$HOME/Android/Sdk"
+  elif [ -d "/usr/lib/android-sdk" ]; then export ANDROID_HOME="/usr/lib/android-sdk"
+  elif [ -d "$HOME/Library/Android/sdk" ]; then export ANDROID_HOME="$HOME/Library/Android/sdk"
   else echo "error: no Android SDK (set ANDROID_HOME or write android/local.properties with sdk.dir)" >&2; exit 1; fi
+fi
+
+pnpm_cmd=(pnpm)
+if ! command -v pnpm >/dev/null 2>&1; then
+  pnpm_cmd=(corepack pnpm)
 fi
 
 missing=()
@@ -31,11 +38,11 @@ fi
 
 cd "$repo"
 echo "== web bundle"
-pnpm --filter @duskbot/mobile build
+"${pnpm_cmd[@]}" --filter @duskbot/mobile build
 echo "== release gate"
 node apps/mobile/scripts/release-gate.mjs
 echo "== cap sync android"
-(cd "$mobile" && npx cap sync android)
+(cd "$mobile" && "${pnpm_cmd[@]}" exec cap sync android)
 echo "== gradle bundleRelease"
 (cd "$mobile/android" && ./gradlew --no-daemon -q bundleRelease)
 

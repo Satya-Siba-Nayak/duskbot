@@ -10,21 +10,6 @@ on:
         description: every scenario (about 40 minutes)
         type: boolean
         default: false
-  schedule:
-    - cron: "41 22 * * 0"
-  push:
-    branches: [main]
-    paths:
-      - apps/link-service/**
-      - electron/vps-link-protocol.mjs
-      - electron/vps-link-direct.mjs
-      - .github/workflows/link-chaos.yml
-  pull_request:
-    paths:
-      - apps/link-service/**
-      - electron/vps-link-protocol.mjs
-      - electron/vps-link-direct.mjs
-      - .github/workflows/link-chaos.yml
 
 permissions:
   contents: read

@@ -5,10 +5,6 @@ name: Link agent signature
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - apps/link-service/agent.mjs
 
 permissions:
   contents: write

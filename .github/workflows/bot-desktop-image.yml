@@ -24,6 +24,7 @@ concurrency:
 jobs:
   tag:
     name: Read the image tag
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
