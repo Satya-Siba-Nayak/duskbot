@@ -26,7 +26,7 @@ export async function connectToWorkspace(record: MobileConnectionRecord, token: 
     let transport: PhoneTransport | undefined;
     let response: Response;
     try {
-      const timed = AbortSignal.any([signal, AbortSignal.timeout(15_000)]);
+      const timed = AbortSignal.any([signal, AbortSignal.timeout(route.kind === "companion" ? 3_500 : 15_000)]);
       const headers = { Authorization: `Bearer ${token}` };
       if (route.kind === "relay") {
         const relay = record.relay;

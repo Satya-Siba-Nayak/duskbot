@@ -24,6 +24,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(OrientationPlugin.class);
         registerPlugin(PhoneNotificationsPlugin.class);
         registerPlugin(TurnActivityPlugin.class);
+        registerPlugin(SseStreamPlugin.class);
         super.onCreate(savedInstanceState);
 
         OrientationPlugin.applyDefaultOrientation(this, landscapeAllowed);

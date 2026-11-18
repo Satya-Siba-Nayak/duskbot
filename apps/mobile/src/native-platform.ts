@@ -139,6 +139,109 @@ interface NotificationsPlugin {
 }
 const DuskNotifications = registerPlugin<NotificationsPlugin>("DuskNotifications");
 
+interface StreamPlugin {
+  open(options: { id: string; url: string; method?: string; headers?: Record<string, string>; body?: string }): Promise<{ status: number; headers: Record<string, string> }>;
+  close(options: { id: string }): Promise<void>;
+  addListener(event: "chunk", listener: (event: { id: string; data: string }) => void): Promise<PluginListenerHandle>;
+  addListener(event: "end", listener: (event: { id: string; error?: string }) => void): Promise<PluginListenerHandle>;
+}
+const DuskStream = registerPlugin<StreamPlugin>("DuskStream");
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function fromBase64(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+export function createNativeStreamFetch(plugin: StreamPlugin): typeof fetch {
+  let nextId = 0;
+  let listening: Promise<void> | null = null;
+  const active = new Map<string, { chunk(data: string): void; end(error?: string): void }>();
+  const ensureListeners = () => {
+    listening ??= Promise.all([
+      plugin.addListener("chunk", ({ id, data }) => active.get(id)?.chunk(data)),
+      plugin.addListener("end", ({ id, error }) => active.get(id)?.end(error)),
+    ]).then(() => {});
+    return listening;
+  };
+  return async (input, init) => {
+    const request = new Request(input, init);
+    request.signal.throwIfAborted();
+    await ensureListeners();
+    request.signal.throwIfAborted();
+    const id = `s${++nextId}`;
+    const headers: Record<string, string> = {};
+    request.headers.forEach((value, key) => { headers[key] = value; });
+    const rawBody = request.body ? new Uint8Array(await request.arrayBuffer()) : null;
+    request.signal.throwIfAborted();
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    let finished = false;
+    const cleanup = (closeRemote: boolean) => {
+      if (finished) return;
+      finished = true;
+      active.delete(id);
+      if (closeRemote) void plugin.close({ id }).catch(() => {});
+    };
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        active.set(id, {
+          chunk(data) {
+            if (finished) return;
+            try { controller.enqueue(fromBase64(data)); } catch {}
+          },
+          end(error) {
+            if (finished) return;
+            cleanup(false);
+            try {
+              if (error) controller.error(new TypeError(error));
+              else controller.close();
+            } catch {}
+          },
+        });
+      },
+      cancel() {
+        cleanup(true);
+      },
+    });
+    const onAbort = () => {
+      cleanup(true);
+      try { streamController?.error(request.signal.reason ?? new DOMException("Aborted", "AbortError")); } catch {}
+    };
+    request.signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      const { status, headers: resHeaders } = await plugin.open({
+        id,
+        url: request.url,
+        method: request.method,
+        headers,
+        ...(rawBody && rawBody.length ? { body: toBase64(rawBody) } : {}),
+      });
+      if (request.signal.aborted) {
+        cleanup(true);
+        throw request.signal.reason ?? new DOMException("Aborted", "AbortError");
+      }
+      const nullBody = status === 204 || status === 205 || status === 304;
+      if (nullBody) cleanup(true);
+      return new Response(nullBody ? null : stream, { status, headers: resHeaders });
+    } catch (error) {
+      request.signal.removeEventListener("abort", onAbort);
+      cleanup(true);
+      throw error instanceof Error ? new TypeError(error.message) : new TypeError("Network request failed");
+    }
+  };
+}
+
 /** Android's delivered pushes: FCM's data block is flat (server/mobile/push.ts messageData). */
 async function androidDelivered(): Promise<DeliveredNotification[]> {
   const { notifications } = await PushNotifications.getDeliveredNotifications();
@@ -285,7 +388,10 @@ const androidScanner: ScanDriver = {
     await BarcodeScanner.addListener("barcodesScanned", ({ barcodes }) => onCode(barcodes[0]?.rawValue)),
     await BarcodeScanner.addListener("scanError", ({ message }) => onError(message)),
   ],
-  start: async () => { await BarcodeScanner.startScan({ formats: [BarcodeFormat.QrCode] }); },
+  start: async () => {
+    await ensureBarcodeModule().catch(() => {});
+    await BarcodeScanner.startScan({ formats: [BarcodeFormat.QrCode] });
+  },
   stop: () => BarcodeScanner.stopScan(),
   torchAvailable: async () => (await BarcodeScanner.isTorchAvailable()).available,
   torch: (on) => (on ? BarcodeScanner.enableTorch() : BarcodeScanner.disableTorch()),
@@ -426,6 +532,9 @@ export async function nativePlatform(): Promise<MobilePlatform> {
   const kind = Capacitor.getPlatform() as "ios" | "android";
   if (kind === "android") {
     overlayReady ??= StatusBar.setOverlaysWebView({ overlay: true }).catch(() => {});
+    if (Capacitor.isPluginAvailable("DuskStream")) {
+      (window as Window & { CapacitorWebFetch?: typeof fetch }).CapacitorWebFetch = createNativeStreamFetch(DuskStream);
+    }
   } else {
     // WKWebView draws a form bar (previous, next, Done) over the keyboard; a chat has one field and its own send
     void Keyboard.setAccessoryBarVisible({ isVisible: false }).catch(() => {});

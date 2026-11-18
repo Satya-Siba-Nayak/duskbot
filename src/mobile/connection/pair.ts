@@ -230,7 +230,7 @@ async function redeemPairingResult(payload: MobilePairingPayload, platform: Mobi
           channel = openRelay(route.base, route.channel, route.token, unbase64(route.key));
           response = await channel.request("POST", "/api/mobile/redeem", headers, utf8(body), AbortSignal.timeout(20_000));
         } else {
-          response = await fetch(`${route.url}/api/mobile/redeem`, { method: "POST", headers, body, credentials: "omit", redirect: "error", signal: AbortSignal.timeout(15_000) });
+          response = await fetch(`${route.url}/api/mobile/redeem`, { method: "POST", headers, body, credentials: "omit", redirect: "error", signal: AbortSignal.timeout(route.kind === "companion" ? 3_500 : 15_000) });
         }
         answer = await response.json().catch(() => null);
       } catch (error) { lastError = pairError(error); continue; }
