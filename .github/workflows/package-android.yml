@@ -80,13 +80,14 @@ jobs:
         run: npx cap sync android
       - name: Build Android APK and AAB
         working-directory: apps/mobile/android
-        env:
-          DUSK_ANDROID_VERSION_CODE: ${{ 1000 + github.run_number }}
-          DUSK_ANDROID_VERSION_NAME: "1.0.${{ github.run_number }}"
         run: |
+          export DUSK_ANDROID_VERSION_CODE=$((1000 + ${GITHUB_RUN_NUMBER:-1}))
+          export DUSK_ANDROID_VERSION_NAME="1.0.${GITHUB_RUN_NUMBER:-1}"
           sdk="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           extra=()
-          if [ ! -d "$sdk/platforms/android-37" ] && [ -d "$sdk/platforms/android-36" ]; then
+          if [ ! -d "$sdk/platforms/android-37" ] && [ ! -d "$sdk/platforms/android-36" ]; then
+            echo "No Android 36/37 SDK found"
+          elif [ ! -d "$sdk/platforms/android-37" ] && [ -d "$sdk/platforms/android-36" ]; then
             echo "Android 37 SDK platform not yet on runner mirror; compiling against installed android-36 platform headers"
             extra=(-PcompileSdkOverride=36)
           fi
