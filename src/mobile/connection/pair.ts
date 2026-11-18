@@ -13,10 +13,10 @@ type PairErrorCode = "expired" | "unknown" | "store-qr" | "used" | "sign-in" | "
 
 export function routeTimeoutMs(route: MobileTransport): number {
   if (route.kind !== "companion") return 12_000;
-  if (route.net === "hosted") return 7_000;
-  if (route.net === "tailnet") return 5_000;
-  if (route.net === "bonjour") return 3_500;
-  return 4_500;
+  if (route.net === "hosted") return 8_000;
+  if (route.net === "tailnet") return 8_000;
+  if (route.net === "bonjour") return 4_000;
+  return 8_000;
 }
 
 export function orderRoutesForDevice(routes: readonly MobileTransport[]): MobileTransport[] {

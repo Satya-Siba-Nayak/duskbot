@@ -1,5 +1,9 @@
 package bot.dusk.mobile;
 
+import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.util.Base64;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -7,6 +11,7 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -53,6 +58,43 @@ public class SseStreamPlugin extends Plugin {
         return path.endsWith("/api/events") || path.endsWith("/stream");
     }
 
+    private static boolean isLanHost(String host) {
+        if (host == null || host.isEmpty()) return false;
+        String lower = host.toLowerCase(Locale.ROOT);
+        if (lower.endsWith(".local")) return true;
+        if (lower.startsWith("192.168.") || lower.startsWith("10.")) return true;
+        if (lower.startsWith("172.")) {
+            String[] parts = lower.split("\\.");
+            if (parts.length == 4) {
+                try {
+                    int second = Integer.parseInt(parts[1]);
+                    return second >= 16 && second <= 31;
+                } catch (NumberFormatException ignored) {}
+            }
+        }
+        return false;
+    }
+
+    private HttpURLConnection openConnectionForUrl(URL url) throws IOException {
+        if (isLanHost(url.getHost())) {
+            try {
+                Context ctx = getContext();
+                if (ctx != null) {
+                    ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+                    if (cm != null) {
+                        for (Network net : cm.getAllNetworks()) {
+                            NetworkCapabilities caps = cm.getNetworkCapabilities(net);
+                            if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                                return (HttpURLConnection) net.openConnection(url);
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+        return (HttpURLConnection) url.openConnection();
+    }
+
     @PluginMethod
     public void open(PluginCall call) {
         final String id = call.getString("id");
@@ -79,7 +121,7 @@ public class SseStreamPlugin extends Plugin {
             boolean wantStream = Boolean.TRUE.equals(reqStream) || isStreamingUrl(urlString);
             try {
                 URL url = new URL(urlString);
-                conn = (HttpURLConnection) url.openConnection();
+                conn = openConnectionForUrl(url);
                 connections.put(id, new ActiveCall(conn, Thread.currentThread()));
 
                 String reqMethod = method != null ? method.toUpperCase(Locale.ROOT) : "GET";
