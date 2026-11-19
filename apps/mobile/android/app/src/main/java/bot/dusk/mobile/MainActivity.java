@@ -18,6 +18,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(PushSetupPlugin.class);
         registerPlugin(HapticsPlugin.class);
         registerPlugin(InsetsPlugin.class);
+        registerPlugin(SseStreamPlugin.class);
         super.onCreate(savedInstanceState);
         EdgeToEdge.enable(this);
         requestLocalNetworkPermissionIfSupported();

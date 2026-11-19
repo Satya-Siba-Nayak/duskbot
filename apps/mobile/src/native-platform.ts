@@ -202,6 +202,161 @@ interface InsetsPlugin {
   addListener(event: "keyboard", listener: (event: { height: number; settled: boolean; duration?: number; at?: number }) => void): Promise<PluginListenerHandle>;
 }
 const DuskInsets = registerPlugin<InsetsPlugin>("DuskInsets");
+/** android only (android/.../SseStreamPlugin.java): native HttpURLConnection streaming for cross-origin
+ * SSE (/api/events) and relay NDJSON (/to-app?wait=25&stream=1) reads that Android WebView blocks as mixed content
+ * or CORS preflights from https://localhost. */
+export interface StreamPlugin {
+  open(options: {
+    id: string;
+    url: string;
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    connectTimeout?: number;
+    readTimeout?: number;
+    stream?: boolean;
+    followRedirects?: boolean;
+  }): Promise<{ status: number; headers: Record<string, string>; body?: string }>;
+  close(options: { id: string }): Promise<void>;
+  addListener(event: "chunk", listener: (event: { id: string; data: string }) => void): Promise<PluginListenerHandle>;
+  addListener(event: "end", listener: (event: { id: string; error?: string }) => void): Promise<PluginListenerHandle>;
+}
+const DuskStream = registerPlugin<StreamPlugin>("DuskStream");
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function fromBase64(b64: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(b64);
+  const out = new Uint8Array(new ArrayBuffer(binary.length));
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+export function createNativeStreamFetch(plugin: StreamPlugin, webFetch?: typeof fetch): typeof fetch {
+  let nextId = 0;
+  let listening: Promise<void> | null = null;
+  const active = new Map<string, { chunk(data: string): void; end(error?: string): void }>();
+  const ensureListeners = () => {
+    listening ??= Promise.all([
+      plugin.addListener("chunk", ({ id, data }) => active.get(id)?.chunk(data)),
+      plugin.addListener("end", ({ id, error }) => active.get(id)?.end(error)),
+    ]).then(() => {}).catch((error) => {
+      listening = null;
+      throw error;
+    });
+    return listening;
+  };
+  return async (input, init) => {
+    const request = new Request(input, init);
+    const parsed = new URL(request.url);
+    const sameOrigin = typeof window !== "undefined" && Boolean(window.location?.origin) && parsed.origin === window.location.origin;
+    if (webFetch && ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || sameOrigin)) {
+      return webFetch(input, init);
+    }
+    request.signal.throwIfAborted();
+    await ensureListeners();
+    request.signal.throwIfAborted();
+    const id = `s${++nextId}`;
+    const headers: Record<string, string> = {};
+    request.headers.forEach((value, key) => { headers[key] = value; });
+    const rawBody = request.body ? new Uint8Array(await request.arrayBuffer()) : null;
+    request.signal.throwIfAborted();
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    let rejectOpen: ((reason: unknown) => void) | null = null;
+    let finished = false;
+    const onAbort = () => {
+      const reason = request.signal.reason ?? new DOMException("Aborted", "AbortError");
+      cleanup(true);
+      rejectOpen?.(reason);
+      try { streamController?.error(reason); } catch {}
+    };
+    const cleanup = (closeRemote: boolean) => {
+      if (finished) return;
+      finished = true;
+      request.signal.removeEventListener("abort", onAbort);
+      active.delete(id);
+      if (closeRemote) void plugin.close({ id }).catch(() => {});
+    };
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        active.set(id, {
+          chunk(data) {
+            if (finished) return;
+            try { controller.enqueue(fromBase64(data)); } catch {}
+          },
+          end(error) {
+            if (finished) return;
+            cleanup(false);
+            try {
+              if (error) controller.error(new TypeError(error));
+              else controller.close();
+            } catch {}
+          },
+        });
+      },
+      cancel() {
+        cleanup(true);
+      },
+    });
+    request.signal.addEventListener("abort", onAbort, { once: true });
+    const accept = (request.headers.get("accept") ?? "").toLowerCase();
+    const isStream =
+      accept.includes("text/event-stream") ||
+      accept.includes("application/x-ndjson") ||
+      parsed.pathname.endsWith("/api/events") ||
+      parsed.pathname.endsWith("/stream") ||
+      parsed.searchParams.get("stream") === "1";
+    try {
+      const openPromise = plugin.open({
+        id,
+        url: request.url,
+        method: request.method,
+        headers,
+        connectTimeout: isStream ? 10_000 : 8_000,
+        stream: isStream,
+        followRedirects: request.redirect !== "error" && request.redirect !== "manual",
+        ...(rawBody && rawBody.length ? { body: toBase64(rawBody) } : {}),
+      });
+      const abortPromise = new Promise<never>((_, reject) => {
+        rejectOpen = reject;
+        if (request.signal.aborted) {
+          reject(request.signal.reason ?? new DOMException("Aborted", "AbortError"));
+        }
+      });
+      const { status, headers: resHeaders, body: inlineBody } = await Promise.race([openPromise, abortPromise]);
+      if (request.signal.aborted) {
+        cleanup(true);
+        throw request.signal.reason ?? new DOMException("Aborted", "AbortError");
+      }
+      if (request.redirect === "error" && status >= 300 && status < 400) {
+        cleanup(true);
+        throw new TypeError(`Unexpected redirect (HTTP ${status})`);
+      }
+      const nullBody = status === 204 || status === 205 || status === 304 || request.method === "HEAD";
+      if (typeof inlineBody === "string") {
+        cleanup(false);
+        return new Response(nullBody ? null : fromBase64(inlineBody), { status, headers: resHeaders });
+      }
+      if (nullBody) cleanup(true);
+      return new Response(nullBody ? null : stream, { status, headers: resHeaders });
+    } catch (error) {
+      cleanup(true);
+      if (request.signal.aborted) throw request.signal.reason ?? error;
+      if (error instanceof TypeError) throw error;
+      const msg = error instanceof Error ? error.message : typeof error === "string" ? error : "Network request failed";
+      throw new TypeError(msg);
+    }
+  };
+}
+
 
 async function groundHex(): Promise<string> {
   const { cssHex } = await import("@/mobile/native-glass");
@@ -428,6 +583,7 @@ export function scannerCamera(driver: ScanDriver, scanning: (on: boolean) => voi
 
 type PendingHandle = Promise<PluginListenerHandle>;
 let overlayReady: Promise<void> | undefined;
+let streamInstalled = false;
 
 export function cameraPermission(value: string): CameraPermission {
   return value === "granted" || value === "limited" ? "granted" : value === "denied" ? "denied" : "prompt";
@@ -496,6 +652,12 @@ export async function nativePlatform(): Promise<MobilePlatform> {
   const kind = Capacitor.getPlatform() as "ios" | "android";
   if (kind === "android") {
     overlayReady ??= StatusBar.setOverlaysWebView({ overlay: true }).catch(() => {});
+    if (!streamInstalled && Capacitor.isPluginAvailable("DuskStream")) {
+      streamInstalled = true;
+      const win = window as Window & { CapacitorWebFetch?: typeof fetch };
+      const origWebFetch = (win.CapacitorWebFetch ?? window.fetch).bind(window);
+      win.CapacitorWebFetch = createNativeStreamFetch(DuskStream, origWebFetch);
+    }
   } else {
     // WKWebView draws a form bar (previous, next, Done) over the keyboard; a chat has one field and its own send
     void Keyboard.setAccessoryBarVisible({ isVisible: false }).catch(() => {});
