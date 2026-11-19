@@ -10,6 +10,8 @@ def releaseValue = { String name ->
 def uploadKeystore = releaseValue('ANDROID_UPLOAD_KEYSTORE_PATH')
 def uploadSigning = uploadKeystore && file(uploadKeystore).exists() &&
         releaseValue('ANDROID_UPLOAD_KEY_ALIAS') && releaseValue('ANDROID_UPLOAD_STORE_PASSWORD') && releaseValue('ANDROID_UPLOAD_KEY_PASSWORD')
+def defaultKeystore = file('dusk-signing.jks')
+def hasDefaultSigning = defaultKeystore.exists()
 
 android {
     namespace = "bot.dusk.mobile"
@@ -32,6 +34,14 @@ android {
         }
     }
     signingConfigs {
+        if (hasDefaultSigning) {
+            duskDefault {
+                storeFile defaultKeystore
+                storePassword 'duskbot123'
+                keyAlias 'dusk'
+                keyPassword 'duskbot123'
+            }
+        }
         if (uploadSigning) {
             upload {
                 storeFile file(uploadKeystore)
@@ -42,8 +52,13 @@ android {
         }
     }
     buildTypes {
+        debug {
+            if (uploadSigning) signingConfig signingConfigs.upload
+            else if (hasDefaultSigning) signingConfig signingConfigs.duskDefault
+        }
         release {
             if (uploadSigning) signingConfig signingConfigs.upload
+            else if (hasDefaultSigning) signingConfig signingConfigs.duskDefault
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
